@@ -15,7 +15,12 @@ from typing import Tuple, Dict, Any, List, Optional
 import json
 import logging
 import traceback
+import time
 from pathlib import Path
+
+# Import detection and masking components
+from .detection.yolo_detector import YOLODetector
+from .masking.mask_generator import MaskGenerator
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -113,6 +118,7 @@ class UniversalDetailerNode:
         """Initialize the Universal Detailer node."""
         self.detection_models = {}
         self.model_cache = {}
+        self.mask_generator = MaskGenerator()
         
         # Initialize paths
         self.base_path = Path(__file__).parent
@@ -178,71 +184,162 @@ class UniversalDetailerNode:
         """
         
         try:
+            # Import memory manager for performance monitoring
+            try:
+                from .utils.memory_utils import MemoryManager
+                memory_manager = MemoryManager()
+            except ImportError:
+                memory_manager = None
+            
+            # Monitor memory usage throughout processing
+            if memory_manager:
+                memory_manager.log_memory_usage("start processing")
+            
+            start_time = time.time()
             logger.info("Starting Universal Detailer processing...")
             logger.info(f"Target parts: {target_parts}")
             logger.info(f"Detection model: {detection_model}")
             logger.info(f"Confidence threshold: {confidence_threshold}")
             
-            # TODO: Implement actual processing logic
-            # This is a skeleton implementation that returns the original image
+            # Validate parameters
+            validated_params = self._validate_parameters(
+                detection_model=detection_model,
+                target_parts=target_parts,
+                confidence_threshold=confidence_threshold,
+                mask_padding=mask_padding,
+                inpaint_strength=inpaint_strength,
+                steps=steps,
+                cfg_scale=cfg_scale,
+                seed=seed,
+                sampler_name=sampler_name,
+                scheduler=scheduler,
+                mask_blur=mask_blur
+            )
             
-            # For now, return original image and empty masks
+            # Get image dimensions and optimize batch size
             batch_size, height, width, channels = image.shape
+            logger.info(f"Processing image: {batch_size}x{height}x{width}x{channels}")
             
-            # Create empty masks
-            empty_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+            # Estimate optimal batch size for memory efficiency
+            if memory_manager:
+                optimal_batch_size = memory_manager.estimate_batch_size(height, width, channels)
+                if batch_size > optimal_batch_size:
+                    logger.warning(f"Large batch size {batch_size} may cause memory issues. "
+                                 f"Recommended: {optimal_batch_size}")
             
-            # Create detection info
+            # Parse target parts
+            target_parts_list = [part.strip() for part in target_parts.split(",")]
+            
+            # Load detection model with memory monitoring
+            if memory_manager:
+                with memory_manager.memory_monitor("model loading"):
+                    detector = self._load_detection_model(detection_model)
+            else:
+                detector = self._load_detection_model(detection_model)
+                
+            if detector is None:
+                raise RuntimeError(f"Failed to load detection model: {detection_model}")
+            
+            # Process images efficiently (batch or sequential based on memory)
+            processed_results = self._process_batch_efficiently(
+                image, detector, target_parts_list, validated_params,
+                model, vae, positive, negative, memory_manager
+            )
+            
+            processed_image, combined_masks, face_masks, hand_masks, detections = processed_results
+            
+            # Calculate processing statistics
+            processing_time = time.time() - start_time
+            face_count = len([d for d in detections if d.get("type") == "face"])
+            hand_count = len([d for d in detections if d.get("type") == "hand"])
+            
+            # Create detection info with performance metrics
             detection_info = {
-                "error": True,
-                "error_type": "NotImplementedError",
-                "message": "This is a skeleton implementation. Complete implementation needed.",
-                "total_detections": 0,
-                "faces_detected": 0,
-                "hands_detected": 0,
-                "processing_time": 0.0,
-                "detections": []
+                "error": False,
+                "total_detections": len(detections),
+                "faces_detected": face_count,
+                "hands_detected": hand_count,
+                "processing_time": round(processing_time, 2),
+                "image_shape": [batch_size, height, width, channels],
+                "parameters": {
+                    "detection_model": detection_model,
+                    "target_parts": target_parts,
+                    "confidence_threshold": confidence_threshold,
+                    "mask_padding": mask_padding,
+                    "mask_blur": mask_blur,
+                    "inpaint_strength": inpaint_strength
+                },
+                "detections": detections,
+                "performance_metrics": {
+                    "processing_time_seconds": round(processing_time, 2),
+                    "pixels_processed": height * width * batch_size,
+                    "pixels_per_second": round((height * width * batch_size) / processing_time),
+                    "memory_efficient": memory_manager is not None
+                }
             }
             
-            logger.warning("⚠️  SKELETON IMPLEMENTATION USED - NO ACTUAL PROCESSING")
-            logger.warning("⚠️  Complete implementation needed by AI developer")
+            # Final memory cleanup
+            if memory_manager:
+                memory_manager.cleanup_memory()
+                memory_manager.log_memory_usage("end processing")
+            
+            logger.info(f"Processing completed in {processing_time:.2f}s")
+            logger.info(f"Found {len(detections)} total detections ({face_count} faces, {hand_count} hands)")
             
             return (
-                image,  # Original image (unchanged)
-                empty_mask,  # Empty detection masks
-                empty_mask,  # Empty face masks
-                empty_mask,  # Empty hand masks
-                json.dumps(detection_info, indent=2)  # Detection info JSON
+                processed_image,
+                combined_masks,
+                face_masks,
+                hand_masks,
+                json.dumps(detection_info, indent=2)
             )
             
         except Exception as e:
             logger.error(f"Error in Universal Detailer processing: {e}")
             logger.error(traceback.format_exc())
             
-            # Return original image and error info
-            batch_size, height, width, channels = image.shape
-            empty_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
-            
-            error_info = {
-                "error": True,
-                "error_type": type(e).__name__,
-                "message": str(e),
-                "processing_completed": False
-            }
-            
-            return (
-                image,
-                empty_mask,
-                empty_mask,
-                empty_mask,
-                json.dumps(error_info, indent=2)
-            )
+            # Use comprehensive error handling
+            try:
+                from .utils.error_handling import create_safe_fallback_result, global_error_handler
+                
+                # Handle error with context
+                success, fallback_result, error_info = global_error_handler.handle_error(
+                    e, 
+                    context="Universal Detailer main processing",
+                    fallback_value=None,
+                    raise_on_critical=False
+                )
+                
+                # Create safe fallback result
+                return create_safe_fallback_result(
+                    image_shape=image.shape,
+                    error_message=f"Processing failed: {str(e)}"
+                )
+                
+            except ImportError:
+                # Fallback to original error handling if error_handling module not available
+                batch_size, height, width, channels = image.shape
+                empty_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+                
+                error_info = {
+                    "error": True,
+                    "error_type": type(e).__name__,
+                    "message": str(e),
+                    "processing_completed": False,
+                    "timestamp": time.time()
+                }
+                
+                return (
+                    image,
+                    empty_mask,
+                    empty_mask,
+                    empty_mask,
+                    json.dumps(error_info, indent=2)
+                )
     
     def _validate_parameters(self, **kwargs) -> Dict[str, Any]:
         """
         Validate and sanitize input parameters.
-        
-        TODO: Implement parameter validation logic
         
         Args:
             **kwargs: Input parameters to validate
@@ -250,14 +347,42 @@ class UniversalDetailerNode:
         Returns:
             Dict of validated parameters
         """
-        # TODO: Implement validation logic
-        return kwargs
+        validated = {}
+        
+        # Validate confidence threshold
+        confidence = kwargs.get("confidence_threshold", 0.5)
+        validated["confidence_threshold"] = max(0.1, min(0.95, confidence))
+        
+        # Validate mask padding
+        padding = kwargs.get("mask_padding", 32)
+        validated["mask_padding"] = max(0, min(128, padding))
+        
+        # Validate inpaint strength
+        strength = kwargs.get("inpaint_strength", 0.75)
+        validated["inpaint_strength"] = max(0.1, min(1.0, strength))
+        
+        # Validate steps
+        steps = kwargs.get("steps", 20)
+        validated["steps"] = max(1, min(100, steps))
+        
+        # Validate CFG scale
+        cfg_scale = kwargs.get("cfg_scale", 7.0)
+        validated["cfg_scale"] = max(1.0, min(30.0, cfg_scale))
+        
+        # Validate mask blur
+        blur = kwargs.get("mask_blur", 4)
+        validated["mask_blur"] = max(0, min(20, blur))
+        
+        # Copy other parameters as-is
+        for key in ["detection_model", "target_parts", "seed", "sampler_name", "scheduler"]:
+            if key in kwargs:
+                validated[key] = kwargs[key]
+        
+        return validated
     
     def _load_detection_model(self, model_name: str):
         """
-        Load and cache detection model.
-        
-        TODO: Implement model loading logic
+        Load and cache detection model using the advanced ModelManager.
         
         Args:
             model_name: Name of the detection model to load
@@ -265,34 +390,166 @@ class UniversalDetailerNode:
         Returns:
             Loaded model object
         """
-        # TODO: Implement model loading
-        logger.warning(f"TODO: Load detection model: {model_name}")
-        return None
+        try:
+            from .detection.model_loader import get_model_manager
+            
+            # Get the global model manager
+            model_manager = get_model_manager()
+            
+            # Try to load model efficiently (with caching)
+            detector = model_manager.load_model_efficiently(model_name, device=self._determine_device("auto"))
+            
+            if detector is not None:
+                logger.info(f"Successfully loaded detection model: {model_name}")
+                return detector
+            else:
+                logger.warning(f"Model {model_name} not available locally, attempting async download...")
+                
+                # Implement async download handling
+                import asyncio
+                import threading
+                
+                def download_and_load():
+                    """Download model in background thread."""
+                    try:
+                        # Create event loop for async operations
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        
+                        # Attempt async download
+                        success = loop.run_until_complete(
+                            model_manager.ensure_model_available(model_name)
+                        )
+                        
+                        if success:
+                            # Try loading again after download
+                            detector = model_manager.load_model_efficiently(
+                                model_name, device=self._determine_device("auto")
+                            )
+                            return detector
+                        else:
+                            logger.warning(f"Async download failed for {model_name}")
+                            return None
+                            
+                    except Exception as e:
+                        logger.error(f"Async download error: {e}")
+                        return None
+                    finally:
+                        loop.close()
+                
+                # For now, call synchronously but structured for future async support
+                try:
+                    downloaded_detector = download_and_load()
+                    if downloaded_detector is not None:
+                        return downloaded_detector
+                except Exception as e:
+                    logger.error(f"Download and load failed: {e}")
+                
+                # Final fallback to old method
+                logger.info("Falling back to traditional model loading method")
+                return self._load_detection_model_fallback(model_name)
+                
+        except ImportError as e:
+            logger.error(f"Failed to import ModelManager: {e}")
+            return self._load_detection_model_fallback(model_name)
+        except Exception as e:
+            logger.error(f"Error loading detection model {model_name}: {e}")
+            return self._load_detection_model_fallback(model_name)
     
-    def _detect_parts(self, image: torch.Tensor, model, target_parts: List[str], confidence_threshold: float):
+    def _load_detection_model_fallback(self, model_name: str):
+        """
+        Fallback method for loading detection models.
+        
+        Args:
+            model_name: Name of the detection model to load
+        
+        Returns:
+            Loaded model object
+        """
+        # Check if model is already cached in old cache
+        if model_name in self.detection_models:
+            logger.info(f"Using cached detection model: {model_name}")
+            return self.detection_models[model_name]
+        
+        try:
+            # Define model paths based on model name
+            model_mapping = {
+                "yolov8n-face": "yolov8n-face.pt",
+                "yolov8s-face": "yolov8s-face.pt", 
+                "hand_yolov8n": "hand_yolov8n.pt"
+            }
+            
+            model_filename = model_mapping.get(model_name, f"{model_name}.pt")
+            model_path = self.models_path / model_filename
+            
+            # If model doesn't exist locally, try to load from ultralytics hub or web
+            if not model_path.exists():
+                logger.info(f"Model {model_filename} not found locally, attempting to download...")
+                model_path = model_name  # Let ultralytics handle the download
+            
+            # Create detector instance
+            detector = YOLODetector(str(model_path))
+            
+            # Load the model
+            if detector.load_model():
+                self.detection_models[model_name] = detector
+                logger.info(f"Successfully loaded detection model: {model_name}")
+                return detector
+            else:
+                logger.error(f"Failed to load detection model: {model_name}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error loading detection model {model_name}: {e}")
+            return None
+    
+    def _determine_device(self, device: str) -> str:
+        """
+        Determine the best device for inference.
+        
+        Args:
+            device: Requested device
+        
+        Returns:
+            Actual device string
+        """
+        if device == "auto":
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        return device
+    
+    def _detect_parts(self, image_np: np.ndarray, detector: YOLODetector, target_parts: List[str], confidence_threshold: float):
         """
         Detect target parts in the image.
         
-        TODO: Implement detection logic using YOLO
-        
         Args:
-            image: Input image tensor
-            model: Detection model
+            image_np: Input image as numpy array
+            detector: Detection model instance
             target_parts: List of parts to detect
             confidence_threshold: Minimum confidence for detections
         
         Returns:
             List of detection results
         """
-        # TODO: Implement detection logic
-        logger.warning("TODO: Implement part detection")
-        return []
+        try:
+            logger.info(f"Detecting parts: {target_parts} with confidence >= {confidence_threshold}")
+            
+            # Run detection
+            detections = detector.detect(
+                image_np,
+                confidence_threshold=confidence_threshold,
+                target_classes=target_parts
+            )
+            
+            logger.info(f"Detection completed, found {len(detections)} objects")
+            return detections
+            
+        except Exception as e:
+            logger.error(f"Error in part detection: {e}")
+            return []
     
     def _generate_masks(self, detections: List, image_shape: Tuple, mask_padding: int, mask_blur: int):
         """
         Generate masks from detection results.
-        
-        TODO: Implement mask generation logic
         
         Args:
             detections: List of detection results
@@ -303,33 +560,385 @@ class UniversalDetailerNode:
         Returns:
             Tuple of mask tensors
         """
-        # TODO: Implement mask generation
-        logger.warning("TODO: Implement mask generation")
-        batch_size, height, width, channels = image_shape
-        empty_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
-        return empty_mask, empty_mask, empty_mask
+        try:
+            logger.info(f"Generating masks for {len(detections)} detections")
+            
+            # Use mask generator to create masks
+            combined_masks, face_masks, hand_masks = self.mask_generator.generate_masks(
+                detections=detections,
+                image_shape=image_shape,
+                padding=mask_padding,
+                blur=mask_blur
+            )
+            
+            logger.info("Mask generation completed")
+            return combined_masks, face_masks, hand_masks
+            
+        except Exception as e:
+            logger.error(f"Error in mask generation: {e}")
+            batch_size, height, width, channels = image_shape
+            empty_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+            return empty_mask, empty_mask, empty_mask
     
     def _inpaint_regions(self, image: torch.Tensor, masks: torch.Tensor, model, vae, positive, negative, **kwargs):
         """
-        Inpaint the masked regions.
-        
-        TODO: Implement inpainting logic
+        Inpaint the masked regions using ComfyUI models.
         
         Args:
-            image: Input image tensor
-            masks: Mask tensor
-            model: Inpainting model
-            vae: VAE encoder/decoder
+            image: Input image tensor (B, H, W, C)
+            masks: Mask tensor (B, H, W) - 1.0 for areas to inpaint
+            model: ComfyUI diffusion model
+            vae: ComfyUI VAE encoder/decoder
             positive: Positive conditioning
             negative: Negative conditioning
             **kwargs: Additional inpainting parameters
         
         Returns:
-            Inpainted image tensor
+            Inpainted image tensor (B, H, W, C)
         """
-        # TODO: Implement inpainting logic
-        logger.warning("TODO: Implement inpainting")
-        return image
+        try:
+            from .utils.comfyui_integration import ComfyUIHelper
+            from .utils.sampling_utils import SamplingUtils
+            from .utils.memory_utils import MemoryManager
+            
+            memory_manager = MemoryManager()
+            
+            with memory_manager.memory_monitor("inpainting"):
+                logger.info("Starting ComfyUI inpainting process")
+                
+                # Get sampling parameters
+                sampling_params = SamplingUtils.prepare_sampling_params(
+                    steps=kwargs.get('steps', 20),
+                    cfg_scale=kwargs.get('cfg_scale', 7.0),
+                    sampler_name=kwargs.get('sampler_name', 'euler'),
+                    scheduler=kwargs.get('scheduler', 'normal'),
+                    seed=kwargs.get('seed', -1)
+                )
+                
+                inpaint_strength = kwargs.get('inpaint_strength', 0.75)
+                
+                # Step 1: VAE encode image to latent space
+                logger.info("Step 1: Encoding image to latent space")
+                original_latents = ComfyUIHelper.encode_with_vae(vae, image)
+                
+                # Step 2: Apply mask to latents and add noise
+                logger.info("Step 2: Applying mask and adding noise")
+                
+                # Create noise generator for reproducible results
+                generator = torch.Generator(device=image.device)
+                generator.manual_seed(sampling_params['seed'])
+                
+                # Prepare noise for masked regions
+                noised_latents = SamplingUtils.prepare_noise_for_inpainting(
+                    original_latents,
+                    masks,
+                    noise_strength=inpaint_strength,
+                    generator=generator
+                )
+                
+                # Step 3: Prepare conditioning
+                logger.info("Step 3: Preparing conditioning")
+                pos_cond, neg_cond = SamplingUtils.prepare_conditioning(
+                    positive, negative, masks
+                )
+                
+                # Step 4: Run diffusion sampling
+                logger.info("Step 4: Running diffusion sampling")
+                sampled_latents = SamplingUtils.sample_with_model(
+                    model=model,
+                    latents=noised_latents,
+                    positive=pos_cond,
+                    negative=neg_cond,
+                    sampling_params=sampling_params,
+                    mask=masks,
+                    original_latents=original_latents
+                )
+                
+                # Step 5: Blend sampled latents with original (for better seamless integration)
+                logger.info("Step 5: Blending latents")
+                blended_latents = SamplingUtils.blend_latents(
+                    sampled_latents=sampled_latents,
+                    original_latents=original_latents,
+                    mask=masks,
+                    blend_strength=inpaint_strength
+                )
+                
+                # Step 6: VAE decode back to image space
+                logger.info("Step 6: Decoding latents to image")
+                inpainted_image = ComfyUIHelper.decode_with_vae(vae, blended_latents)
+                
+                # Step 7: Final image blending for seamless results
+                logger.info("Step 7: Final image blending")
+                final_image = self._blend_images(image, inpainted_image, masks, inpaint_strength)
+                
+                # Cleanup memory
+                memory_manager.cleanup_memory()
+                
+                logger.info("ComfyUI inpainting process completed successfully")
+                return final_image
+                
+        except ImportError as e:
+            logger.error(f"Failed to import utility modules: {e}")
+            logger.warning("Falling back to original image")
+            return image
+            
+        except Exception as e:
+            logger.error(f"Error in ComfyUI inpainting: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            logger.warning("Falling back to original image")
+            return image
+    
+    def _blend_images(
+        self, 
+        original: torch.Tensor, 
+        inpainted: torch.Tensor, 
+        mask: torch.Tensor, 
+        blend_strength: float = 1.0
+    ) -> torch.Tensor:
+        """
+        Blend original and inpainted images using mask.
+        
+        Args:
+            original: Original image tensor (B, H, W, C)
+            inpainted: Inpainted image tensor (B, H, W, C)
+            mask: Mask tensor (B, H, W) - 1.0 for inpainted areas
+            blend_strength: Blending strength (0.0 = original, 1.0 = inpainted)
+            
+        Returns:
+            Blended image tensor (B, H, W, C)
+        """
+        try:
+            # Ensure mask has the correct dimensions
+            if len(mask.shape) == 3 and len(original.shape) == 4:
+                # Expand mask to match image channels
+                mask_expanded = mask.unsqueeze(-1).expand_as(original)
+            else:
+                mask_expanded = mask
+            
+            # Apply blend strength
+            effective_mask = mask_expanded * blend_strength
+            
+            # Blend images
+            blended = original * (1.0 - effective_mask) + inpainted * effective_mask
+            
+            # Ensure values are in valid range
+            blended = torch.clamp(blended, 0.0, 1.0)
+            
+            logger.info(f"Blended images with strength {blend_strength}")
+            return blended
+            
+        except Exception as e:
+            logger.error(f"Image blending failed: {e}")
+            return original
+    
+    def _process_batch_efficiently(
+        self, 
+        image: torch.Tensor, 
+        detector, 
+        target_parts_list: List[str], 
+        validated_params: Dict[str, Any],
+        model, 
+        vae, 
+        positive, 
+        negative, 
+        memory_manager=None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[Dict]]:
+        """
+        Process batch of images efficiently based on available memory.
+        
+        Args:
+            image: Input image tensor (B, H, W, C)
+            detector: Detection model
+            target_parts_list: List of target parts to detect
+            validated_params: Validated processing parameters
+            model: ComfyUI diffusion model
+            vae: ComfyUI VAE
+            positive: Positive conditioning
+            negative: Negative conditioning
+            memory_manager: Optional memory manager
+            
+        Returns:
+            Tuple of processed results
+        """
+        try:
+            batch_size, height, width, channels = image.shape
+            confidence_threshold = validated_params.get('confidence_threshold', 0.5)
+            mask_padding = validated_params.get('mask_padding', 32)
+            mask_blur = validated_params.get('mask_blur', 4)
+            
+            # Initialize result tensors
+            processed_images = []
+            all_combined_masks = []
+            all_face_masks = []
+            all_hand_masks = []
+            all_detections = []
+            
+            # Process each image in the batch
+            for batch_idx in range(batch_size):
+                if memory_manager:
+                    memory_manager.log_memory_usage(f"processing image {batch_idx + 1}/{batch_size}")
+                
+                # Extract single image from batch
+                single_image = image[batch_idx:batch_idx+1]  # Keep batch dimension
+                
+                # Convert to numpy for detection
+                image_np = self._tensor_to_numpy(single_image[0])
+                
+                # Detect parts
+                detections = self._detect_parts(
+                    image_np, 
+                    detector, 
+                    target_parts_list, 
+                    confidence_threshold
+                )
+                
+                # Generate masks for this image
+                combined_mask, face_mask, hand_mask = self._generate_masks(
+                    detections, 
+                    single_image.shape, 
+                    mask_padding, 
+                    mask_blur
+                )
+                
+                # Process inpainting if detections found
+                if torch.any(combined_mask > 0):
+                    logger.info(f"Processing inpainting for image {batch_idx + 1} with {len(detections)} detections")
+                    processed_single = self._inpaint_regions(
+                        single_image,
+                        combined_mask,
+                        model,
+                        vae,
+                        positive,
+                        negative,
+                        **validated_params
+                    )
+                else:
+                    logger.info(f"No detections for image {batch_idx + 1}, keeping original")
+                    processed_single = single_image
+                
+                # Collect results
+                processed_images.append(processed_single)
+                all_combined_masks.append(combined_mask)
+                all_face_masks.append(face_mask)
+                all_hand_masks.append(hand_mask)
+                all_detections.extend(detections)
+                
+                # Cleanup after each image if memory manager available
+                if memory_manager and batch_idx < batch_size - 1:
+                    memory_manager.cleanup_memory(force=False)
+            
+            # Combine results back into batches
+            final_image = torch.cat(processed_images, dim=0)
+            final_combined_masks = torch.cat(all_combined_masks, dim=0)
+            final_face_masks = torch.cat(all_face_masks, dim=0)
+            final_hand_masks = torch.cat(all_hand_masks, dim=0)
+            
+            logger.info(f"Batch processing completed: {batch_size} images, {len(all_detections)} total detections")
+            
+            return final_image, final_combined_masks, final_face_masks, final_hand_masks, all_detections
+            
+        except Exception as e:
+            logger.error(f"Batch processing failed: {e}")
+            # Fallback to original processing
+            return self._process_batch_fallback(
+                image, detector, target_parts_list, validated_params,
+                model, vae, positive, negative
+            )
+    
+    def _process_batch_fallback(
+        self, 
+        image: torch.Tensor, 
+        detector, 
+        target_parts_list: List[str], 
+        validated_params: Dict[str, Any],
+        model, 
+        vae, 
+        positive, 
+        negative
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[Dict]]:
+        """
+        Fallback batch processing method for compatibility.
+        
+        Returns:
+            Tuple of processed results
+        """
+        try:
+            confidence_threshold = validated_params.get('confidence_threshold', 0.5)
+            mask_padding = validated_params.get('mask_padding', 32)
+            mask_blur = validated_params.get('mask_blur', 4)
+            
+            # Convert image tensor to numpy for detection
+            image_np = self._tensor_to_numpy(image[0])  # Process first image in batch
+            
+            # Detect target parts
+            detections = self._detect_parts(
+                image_np, 
+                detector, 
+                target_parts_list, 
+                confidence_threshold
+            )
+            
+            # Generate masks
+            combined_masks, face_masks, hand_masks = self._generate_masks(
+                detections, 
+                image.shape, 
+                mask_padding, 
+                mask_blur
+            )
+            
+            # Process inpainting if masks are not empty
+            processed_image = image
+            if torch.any(combined_masks > 0):
+                logger.info("Processing inpainting for detected regions")
+                processed_image = self._inpaint_regions(
+                    image,
+                    combined_masks,
+                    model,
+                    vae,
+                    positive,
+                    negative,
+                    **validated_params
+                )
+            else:
+                logger.info("No detections found, returning original image")
+            
+            return processed_image, combined_masks, face_masks, hand_masks, detections
+            
+        except Exception as e:
+            logger.error(f"Fallback processing failed: {e}")
+            # Return original with empty masks
+            batch_size, height, width, channels = image.shape
+            empty_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+            return image, empty_mask, empty_mask, empty_mask, []
+    
+    def _tensor_to_numpy(self, tensor: torch.Tensor) -> np.ndarray:
+        """
+        Convert PyTorch tensor to numpy array for YOLO processing.
+        
+        Args:
+            tensor: Input tensor (H, W, C) in 0-1 range
+            
+        Returns:
+            Numpy array (H, W, C) in 0-255 range
+        """
+        try:
+            # Optimize tensor memory usage
+            if hasattr(self, 'utils') and hasattr(self.utils, 'memory_utils'):
+                tensor = self.utils.memory_utils.MemoryManager.optimize_tensor_memory(tensor)
+            
+            # Convert to numpy and scale to 0-255 range
+            if tensor.max() <= 1.0:
+                numpy_array = (tensor.cpu().numpy() * 255).astype(np.uint8)
+            else:
+                numpy_array = tensor.cpu().numpy().astype(np.uint8)
+                
+            return numpy_array
+            
+        except Exception as e:
+            logger.error(f"Tensor to numpy conversion failed: {e}")
+            # Fallback conversion
+            return (tensor.cpu().numpy() * 255).astype(np.uint8) if tensor.max() <= 1.0 else tensor.cpu().numpy().astype(np.uint8)
 
 # For testing and development
 if __name__ == "__main__":

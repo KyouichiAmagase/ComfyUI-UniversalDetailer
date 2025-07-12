@@ -59,20 +59,25 @@ class YOLODetector:
         """
         Load the YOLO model.
         
-        TODO: Implement YOLO model loading using ultralytics
-        
         Returns:
             True if successful, False otherwise
         """
         try:
-            # TODO: Implement actual model loading
-            # from ultralytics import YOLO
-            # self.model = YOLO(self.model_path)
-            # self.model.to(self.device)
+            from ultralytics import YOLO
             
-            logger.warning("TODO: Implement YOLO model loading")
+            logger.info(f"Loading YOLO model from: {self.model_path}")
+            self.model = YOLO(self.model_path)
+            
+            # Move model to specified device
+            if hasattr(self.model, 'to'):
+                self.model.to(self.device)
+            
+            logger.info(f"YOLO model loaded successfully on device: {self.device}")
+            return True
+            
+        except ImportError as e:
+            logger.error(f"ultralytics not available: {e}")
             return False
-            
         except Exception as e:
             logger.error(f"Failed to load YOLO model: {e}")
             return False
@@ -85,8 +90,6 @@ class YOLODetector:
     ) -> List[Dict[str, Any]]:
         """
         Detect objects in the image.
-        
-        TODO: Implement actual YOLO detection
         
         Args:
             image: Input image as numpy array
@@ -101,12 +104,16 @@ class YOLODetector:
             return []
         
         try:
-            # TODO: Implement actual detection
-            # results = self.model(image, conf=confidence_threshold)
-            # detections = self._process_results(results, target_classes)
+            logger.info(f"Running detection with confidence threshold: {confidence_threshold}")
             
-            logger.warning("TODO: Implement YOLO detection")
-            return []
+            # Run YOLO inference
+            results = self.model(image, conf=confidence_threshold, verbose=False)
+            
+            # Process results
+            detections = self._process_results(results, target_classes)
+            
+            logger.info(f"Found {len(detections)} detections")
+            return detections
             
         except Exception as e:
             logger.error(f"Detection failed: {e}")
@@ -116,8 +123,6 @@ class YOLODetector:
         """
         Process YOLO results into standardized format.
         
-        TODO: Implement result processing
-        
         Args:
             results: Raw YOLO results
             target_classes: Filter for specific classes
@@ -125,9 +130,71 @@ class YOLODetector:
         Returns:
             List of processed detection dictionaries
         """
-        # TODO: Implement result processing
-        logger.warning("TODO: Implement result processing")
-        return []
+        detections = []
+        
+        try:
+            for result in results:
+                if result.boxes is None:
+                    continue
+                    
+                boxes = result.boxes
+                for i in range(len(boxes)):
+                    # Extract box coordinates (x1, y1, x2, y2)
+                    bbox = boxes.xyxy[i].cpu().numpy().tolist()
+                    confidence = float(boxes.conf[i].cpu().numpy())
+                    class_id = int(boxes.cls[i].cpu().numpy())
+                    
+                    # Get class name if available
+                    class_name = "unknown"
+                    if hasattr(result, 'names') and class_id in result.names:
+                        class_name = result.names[class_id]
+                    
+                    # Map class names to detection types
+                    detection_type = self._map_class_to_type(class_name)
+                    
+                    # Filter by target classes if specified
+                    if target_classes is not None:
+                        if detection_type not in target_classes and class_name not in target_classes:
+                            continue
+                    
+                    detection = {
+                        "bbox": bbox,  # [x1, y1, x2, y2]
+                        "confidence": confidence,
+                        "class_id": class_id,
+                        "class_name": class_name,
+                        "type": detection_type,
+                        "area": (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                    }
+                    
+                    detections.append(detection)
+                    
+        except Exception as e:
+            logger.error(f"Error processing YOLO results: {e}")
+            
+        return detections
+    
+    def _map_class_to_type(self, class_name: str) -> str:
+        """
+        Map YOLO class names to detection types.
+        
+        Args:
+            class_name: YOLO class name
+            
+        Returns:
+            Detection type string
+        """
+        class_name_lower = class_name.lower()
+        
+        if "face" in class_name_lower or "head" in class_name_lower:
+            return "face"
+        elif "hand" in class_name_lower:
+            return "hand"
+        elif "finger" in class_name_lower:
+            return "finger"
+        elif "person" in class_name_lower:
+            return "person"
+        else:
+            return "other"
     
     def is_loaded(self) -> bool:
         """
@@ -145,9 +212,13 @@ class YOLODetector:
         Returns:
             Dictionary with model information
         """
+        classes = []
+        if self.model is not None and hasattr(self.model, 'names'):
+            classes = list(self.model.names.values()) if self.model.names else []
+            
         return {
             "model_path": self.model_path,
             "device": self.device,
             "loaded": self.is_loaded(),
-            "classes": [],  # TODO: Get actual class names
+            "classes": classes,
         }

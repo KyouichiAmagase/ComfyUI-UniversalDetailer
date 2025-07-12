@@ -41,8 +41,6 @@ class MaskGenerator:
         """
         Generate masks from detection results.
         
-        TODO: Implement mask generation logic
-        
         Args:
             detections: List of detection dictionaries
             image_shape: Shape of the input image (batch, height, width, channels)
@@ -53,12 +51,85 @@ class MaskGenerator:
             Tuple of (combined_masks, face_masks, hand_masks)
         """
         batch_size, height, width, channels = image_shape
+        logger.info(f"Generating masks for {len(detections)} detections, image shape: {image_shape}")
         
-        # TODO: Implement actual mask generation
-        empty_mask = torch.zeros((batch_size, height, width), dtype=torch.float32)
+        # Initialize mask tensors
+        combined_masks = torch.zeros((batch_size, height, width), dtype=torch.float32)
+        face_masks = torch.zeros((batch_size, height, width), dtype=torch.float32)
+        hand_masks = torch.zeros((batch_size, height, width), dtype=torch.float32)
         
-        logger.warning("TODO: Implement mask generation")
-        return empty_mask, empty_mask, empty_mask
+        if not detections:
+            logger.info("No detections provided, returning empty masks")
+            return combined_masks, face_masks, hand_masks
+        
+        # Separate detections by type
+        face_detections = self._filter_masks_by_type(detections, "face")
+        hand_detections = self._filter_masks_by_type(detections, "hand")
+        
+        logger.info(f"Processing {len(face_detections)} face detections and {len(hand_detections)} hand detections")
+        
+        # Generate masks for each batch item
+        for batch_idx in range(batch_size):
+            # Generate face masks
+            if face_detections:
+                face_mask_np = self._generate_mask_for_detections(
+                    face_detections, (height, width), padding, blur
+                )
+                face_masks[batch_idx] = self.numpy_to_torch(face_mask_np, 1)[0]
+            
+            # Generate hand masks
+            if hand_detections:
+                hand_mask_np = self._generate_mask_for_detections(
+                    hand_detections, (height, width), padding, blur
+                )
+                hand_masks[batch_idx] = self.numpy_to_torch(hand_mask_np, 1)[0]
+            
+            # Combine all masks
+            combined_masks[batch_idx] = torch.maximum(face_masks[batch_idx], hand_masks[batch_idx])
+        
+        logger.info("Mask generation completed")
+        return combined_masks, face_masks, hand_masks
+    
+    def _generate_mask_for_detections(
+        self,
+        detections: List[Dict[str, Any]],
+        image_shape: Tuple[int, int],
+        padding: int,
+        blur: int
+    ) -> np.ndarray:
+        """
+        Generate a single mask for multiple detections.
+        
+        Args:
+            detections: List of detection dictionaries
+            image_shape: Shape of the image (height, width)
+            padding: Padding to add around detections
+            blur: Blur radius for mask edges
+        
+        Returns:
+            Combined mask as numpy array
+        """
+        masks = []
+        
+        for detection in detections:
+            bbox = detection.get("bbox")
+            if bbox is None:
+                continue
+                
+            # Create mask from bounding box
+            mask = self._create_bbox_mask(tuple(bbox), image_shape, padding)
+            
+            # Apply blur
+            if blur > 0:
+                mask = self._apply_blur(mask, blur)
+            
+            masks.append(mask)
+        
+        if not masks:
+            return np.zeros(image_shape, dtype=np.uint8)
+        
+        # Combine all masks
+        return self._combine_masks(masks)
     
     def _create_bbox_mask(
         self,
@@ -68,8 +139,6 @@ class MaskGenerator:
     ) -> np.ndarray:
         """
         Create a mask from a bounding box.
-        
-        TODO: Implement bbox to mask conversion
         
         Args:
             bbox: Bounding box coordinates (x1, y1, x2, y2)
@@ -82,8 +151,21 @@ class MaskGenerator:
         height, width = image_shape
         mask = np.zeros((height, width), dtype=np.uint8)
         
-        # TODO: Implement bbox to mask conversion
-        logger.warning("TODO: Implement bbox to mask conversion")
+        # Extract and validate bounding box coordinates
+        x1, y1, x2, y2 = bbox
+        
+        # Ensure coordinates are integers
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        
+        # Apply padding
+        x1 = max(0, x1 - padding)
+        y1 = max(0, y1 - padding)
+        x2 = min(width, x2 + padding)
+        y2 = min(height, y2 + padding)
+        
+        # Ensure valid bounding box
+        if x2 > x1 and y2 > y1:
+            mask[y1:y2, x1:x2] = 255
         
         return mask
     
