@@ -1,0 +1,187 @@
+{
+  "version": "1.0.0",
+  "workflow_name": "Multi-Part Enhancement (Face + Hands)",
+  "description": "Advanced workflow to enhance both faces and hands simultaneously",
+  "nodes": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "full_body_image.png"
+      },
+      "outputs": {
+        "IMAGE": ["2", 0]
+      }
+    },
+    "2": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "realistic_model.safetensors"
+      },
+      "outputs": {
+        "MODEL": ["7", 0],
+        "CLIP": ["3", 0],
+        "VAE": ["7", 1]
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "beautiful detailed face, perfect hands, high quality, photorealistic",
+        "clip": ["2", 1]
+      },
+      "outputs": {
+        "CONDITIONING": ["7", 2]
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "blurry face, distorted hands, low quality, artifacts",
+        "clip": ["2", 1]
+      },
+      "outputs": {
+        "CONDITIONING": ["7", 3]
+      }
+    },
+    "5": {
+      "class_type": "ControlNetLoader",
+      "inputs": {
+        "control_net_name": "control_v11p_sd15_openpose.pth"
+      },
+      "outputs": {
+        "CONTROL_NET": ["6", 0]
+      }
+    },
+    "6": {
+      "class_type": "ControlNetApply",
+      "inputs": {
+        "conditioning": ["3", 0],
+        "control_net": ["5", 0],
+        "image": ["1", 0],
+        "strength": 0.8
+      },
+      "outputs": {
+        "CONDITIONING": ["7", 2]
+      }
+    },
+    "7": {
+      "class_type": "UniversalDetailer",
+      "inputs": {
+        "image": ["1", 0],
+        "model": ["2", 0],
+        "vae": ["2", 2], 
+        "positive": ["6", 0],
+        "negative": ["4", 0],
+        "detection_model": "yolov8s-face",
+        "target_parts": "face,hand",
+        "confidence_threshold": 0.6,
+        "mask_padding": 48,
+        "mask_blur": 6,
+        "inpaint_strength": 0.75,
+        "steps": 25,
+        "cfg_scale": 8.0,
+        "sampler_name": "dpm_solver",
+        "scheduler": "karras"
+      },
+      "outputs": {
+        "IMAGE": ["8", 0],
+        "detection_masks": ["9", 0],
+        "face_masks": ["10", 0],
+        "hand_masks": ["11", 0],
+        "detection_info": ["12", 0]
+      }
+    },
+    "8": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": ["7", 0],
+        "filename_prefix": "enhanced_multipart"
+      }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": ["7", 1],
+        "filename_prefix": "detection_masks"
+      }
+    },
+    "10": {
+      "class_type": "SaveImage", 
+      "inputs": {
+        "images": ["7", 2],
+        "filename_prefix": "face_masks"
+      }
+    },
+    "11": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": ["7", 3], 
+        "filename_prefix": "hand_masks"
+      }
+    },
+    "12": {
+      "class_type": "ShowText",
+      "inputs": {
+        "text": ["7", 4]
+      }
+    }
+  },
+  "metadata": {
+    "title": "Multi-Part Enhancement",
+    "category": "image/enhancement", 
+    "author": "Universal Detailer",
+    "version": "1.0.0",
+    "comfyui_version": "latest",
+    "required_models": [
+      "realistic_diffusion_model.safetensors",
+      "yolov8s-face.pt (auto-downloaded)",
+      "hand_yolov8n.pt (optional, for better hand detection)",
+      "control_v11p_sd15_openpose.pth (optional, for pose guidance)"
+    ],
+    "estimated_vram": "8GB",
+    "processing_time": "20-30 seconds for 1024x1024"
+  },
+  "parameters": {
+    "detection_model": {
+      "description": "Higher accuracy model for better multi-part detection",
+      "default": "yolov8s-face",
+      "recommendation": "yolov8s-face for better accuracy with multiple parts"
+    },
+    "target_parts": {
+      "description": "Parts to detect and enhance",
+      "options": ["face", "hand", "face,hand", "face,hand,finger"],
+      "default": "face,hand",
+      "recommendation": "face,hand for full-body portraits"
+    },
+    "confidence_threshold": {
+      "description": "Lower threshold for detecting smaller/partially visible parts",
+      "default": 0.6,
+      "recommendation": "0.6 for multi-part, 0.7 for single part"
+    },
+    "mask_padding": {
+      "description": "Larger padding for better blending with multiple parts",
+      "default": 48,
+      "recommendation": "48 for multi-part, 32 for single part"
+    },
+    "steps": {
+      "description": "More steps for higher quality multi-part enhancement",
+      "default": 25,
+      "recommendation": "25-30 for multi-part workflows"
+    }
+  },
+  "optimization_tips": [
+    "Use yolov8s-face model for better detection accuracy",
+    "Enable ControlNet pose guidance for body consistency", 
+    "Increase mask_padding for better part blending",
+    "Use lower confidence_threshold to catch partial hands",
+    "Monitor detection_info to verify all parts are found",
+    "Consider batch processing for multiple similar images"
+  ],
+  "troubleshooting": {
+    "hands_not_detected": "Lower confidence_threshold to 0.5, ensure hands are clearly visible",
+    "faces_not_detected": "Check image lighting and face visibility, try different detection_model",
+    "artifacts_at_boundaries": "Increase mask_blur and mask_padding values",
+    "processing_too_slow": "Use yolov8n-face model, reduce steps to 20",
+    "out_of_memory": "Reduce image resolution or batch size, enable memory optimization"
+  }
+}

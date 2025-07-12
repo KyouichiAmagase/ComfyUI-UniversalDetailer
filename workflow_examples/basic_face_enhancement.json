@@ -1,0 +1,136 @@
+{
+  "version": "1.0.0",
+  "workflow_name": "Basic Face Enhancement with Universal Detailer",
+  "description": "Simple workflow to enhance faces in images using Universal Detailer",
+  "nodes": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "input_image.png"
+      },
+      "outputs": {
+        "IMAGE": ["2", 0],
+        "MASK": ["optional"]
+      }
+    },
+    "2": {
+      "class_type": "CheckpointLoaderSimple", 
+      "inputs": {
+        "ckpt_name": "your_model.safetensors"
+      },
+      "outputs": {
+        "MODEL": ["6", 0],
+        "CLIP": ["3", 0],
+        "VAE": ["6", 1]
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "beautiful face, high quality, detailed",
+        "clip": ["2", 1]
+      },
+      "outputs": {
+        "CONDITIONING": ["6", 2]
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode", 
+      "inputs": {
+        "text": "blurry, low quality, distorted face",
+        "clip": ["2", 1]
+      },
+      "outputs": {
+        "CONDITIONING": ["6", 3]
+      }
+    },
+    "5": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "width": 512,
+        "height": 512,
+        "batch_size": 1
+      }
+    },
+    "6": {
+      "class_type": "UniversalDetailer",
+      "inputs": {
+        "image": ["1", 0],
+        "model": ["2", 0],
+        "vae": ["2", 2],
+        "positive": ["3", 0],
+        "negative": ["4", 0],
+        "detection_model": "yolov8n-face",
+        "target_parts": "face",
+        "confidence_threshold": 0.7,
+        "mask_padding": 32,
+        "mask_blur": 4,
+        "inpaint_strength": 0.8,
+        "steps": 20,
+        "cfg_scale": 7.0,
+        "sampler_name": "euler",
+        "scheduler": "normal"
+      },
+      "outputs": {
+        "IMAGE": ["7", 0],
+        "detection_masks": ["optional"],
+        "face_masks": ["optional"], 
+        "hand_masks": ["optional"],
+        "detection_info": ["optional"]
+      }
+    },
+    "7": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": ["6", 0],
+        "filename_prefix": "enhanced_face"
+      }
+    }
+  },
+  "metadata": {
+    "title": "Basic Face Enhancement",
+    "category": "image/enhancement",
+    "author": "Universal Detailer",
+    "version": "1.0.0",
+    "comfyui_version": "latest",
+    "required_models": [
+      "diffusion_model.safetensors",
+      "yolov8n-face.pt (auto-downloaded)"
+    ],
+    "estimated_vram": "6GB",
+    "processing_time": "10-15 seconds for 512x512"
+  },
+  "parameters": {
+    "detection_model": {
+      "description": "YOLO model for face detection",
+      "options": ["yolov8n-face", "yolov8s-face"],
+      "default": "yolov8n-face",
+      "recommendation": "yolov8n-face for speed, yolov8s-face for accuracy"
+    },
+    "confidence_threshold": {
+      "description": "Minimum confidence for face detection",
+      "range": [0.1, 0.95],
+      "default": 0.7,
+      "recommendation": "0.7 for balanced detection"
+    },
+    "inpaint_strength": {
+      "description": "Strength of inpainting effect",
+      "range": [0.1, 1.0],
+      "default": 0.8,
+      "recommendation": "0.8 for good enhancement, 0.6 for subtle changes"
+    },
+    "steps": {
+      "description": "Diffusion sampling steps",
+      "range": [10, 50],
+      "default": 20,
+      "recommendation": "20 for quality/speed balance"
+    }
+  },
+  "usage_tips": [
+    "Use clear, well-lit portrait images for best results",
+    "Adjust confidence_threshold if faces aren't detected",
+    "Lower inpaint_strength for more subtle enhancements",
+    "Increase steps for higher quality (but slower processing)",
+    "Check detection_info output for debugging"
+  ]
+}
