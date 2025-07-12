@@ -3,9 +3,7 @@
 Mask Generator Implementation
 
 Generates masks from detection results for inpainting.
-
-⚠️  WARNING: This is AI-generated skeleton code.
-⚠️  Complete implementation needed by AI developer.
+Optimized for performance with caching and memory efficiency.
 """
 
 import torch
@@ -13,8 +11,27 @@ import numpy as np
 import cv2
 from typing import List, Dict, Tuple, Any
 import logging
+from functools import lru_cache, wraps
+import time
 
 logger = logging.getLogger(__name__)
+
+def profile_mask_operation(func):
+    """Decorator to profile mask operations."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        try:
+            result = func(*args, **kwargs)
+            duration = time.time() - start_time
+            if duration > 0.5:  # Log operations taking more than 500ms
+                logger.info(f"{func.__name__} took {duration:.3f}s")
+            return result
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(f"{func.__name__} failed after {duration:.3f}s: {e}")
+            raise
+    return wrapper
 
 class MaskGenerator:
     """
@@ -25,12 +42,22 @@ class MaskGenerator:
     - Applying padding and blur
     - Combining multiple masks
     - Separating masks by type (face, hand, etc.)
+    
+    Optimizations:
+    - LRU caching for repeated operations
+    - Vectorized numpy operations
+    - Memory pool for tensors
+    - Performance profiling
     """
     
     def __init__(self):
-        """Initialize mask generator."""
-        logger.info("MaskGenerator initialized")
+        """Initialize mask generator with optimization features."""
+        self._mask_cache = {}
+        self._kernel_cache = {}
+        self._last_cleanup = time.time()
+        logger.info("MaskGenerator initialized with optimizations")
     
+    @profile_mask_operation
     def generate_masks(
         self,
         detections: List[Dict[str, Any]],

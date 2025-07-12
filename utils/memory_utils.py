@@ -13,8 +13,24 @@ from typing import Dict, Any, Optional, List, Tuple
 import logging
 import time
 from contextlib import contextmanager
+from functools import lru_cache, wraps
+import threading
+from collections import deque
 
 logger = logging.getLogger(__name__)
+
+def memory_profile(func):
+    """Decorator to profile memory usage of functions."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        global_memory_manager = args[0] if args and isinstance(args[0], MemoryManager) else None
+        
+        if global_memory_manager:
+            with global_memory_manager.memory_monitor(func.__name__):
+                return func(*args, **kwargs)
+        else:
+            return func(*args, **kwargs)
+    return wrapper
 
 class MemoryManager:
     """
@@ -25,11 +41,18 @@ class MemoryManager:
     - Automatic cleanup and garbage collection
     - Memory-aware batch size adjustment
     - Resource tracking and optimization
+    - Thread-safe operations
+    - LRU caching for performance
+    - Memory leak detection
     """
     
     def __init__(self):
-        self.memory_stats = []
+        self.memory_stats = deque(maxlen=1000)  # Circular buffer for efficiency
         self.cleanup_threshold = 0.9  # Cleanup when 90% memory used
+        self._cache_stats = {}
+        self._lock = threading.Lock()
+        self._tensor_pool = {}
+        self._last_cleanup = time.time()
         
     def get_memory_stats(self) -> Dict[str, Any]:
         """

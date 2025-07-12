@@ -28,6 +28,8 @@ class PerformanceMonitor:
         self.call_counts = {}
         self.memory_peaks = {}
         self.benchmark_results = {}
+        self._memory_pool = {}  # Tensor memory pool for reuse
+        self._last_cleanup = time.time()
     
     @contextmanager
     def timer(self, operation_name: str):
@@ -105,12 +107,39 @@ class PerformanceMonitor:
         
         return report
     
+    def get_pooled_tensor(self, shape: Tuple, dtype: torch.dtype = torch.float32, device: str = "cpu") -> torch.Tensor:
+        """Get a tensor from memory pool for reuse."""
+        key = (shape, dtype, device)
+        if key in self._memory_pool and len(self._memory_pool[key]) > 0:
+            return self._memory_pool[key].pop()
+        else:
+            return torch.empty(shape, dtype=dtype, device=device)
+    
+    def return_pooled_tensor(self, tensor: torch.Tensor):
+        """Return tensor to memory pool for reuse."""
+        key = (tuple(tensor.shape), tensor.dtype, str(tensor.device))
+        if key not in self._memory_pool:
+            self._memory_pool[key] = []
+        if len(self._memory_pool[key]) < 5:  # Limit pool size
+            self._memory_pool[key].append(tensor.detach().clone())
+    
+    def cleanup_memory_pool(self):
+        """Cleanup memory pool periodically."""
+        current_time = time.time()
+        if current_time - self._last_cleanup > 300:  # Every 5 minutes
+            for key in list(self._memory_pool.keys()):
+                if len(self._memory_pool[key]) > 2:
+                    self._memory_pool[key] = self._memory_pool[key][:2]
+            self._last_cleanup = current_time
+            logger.info("Memory pool cleaned up")
+
     def reset_stats(self):
         """Reset all performance statistics."""
         self.timings.clear()
         self.call_counts.clear()
         self.memory_peaks.clear()
         self.benchmark_results.clear()
+        self._memory_pool.clear()
 
 def performance_timer(operation_name: str = None):
     """

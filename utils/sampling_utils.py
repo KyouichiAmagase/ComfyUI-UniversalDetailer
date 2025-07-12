@@ -10,6 +10,7 @@ import torch
 import numpy as np
 from typing import Dict, Any, Optional, Tuple, List
 import logging
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class SamplingUtils:
     """
     
     @staticmethod
+    @lru_cache(maxsize=128)
     def prepare_sampling_params(
         steps: int = 20,
         cfg_scale: float = 7.0,
